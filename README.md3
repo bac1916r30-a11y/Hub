@@ -1,0 +1,601 @@
+--// WZAGRL HUB v6.7 - Banana Cat Hub + Misc Tab Full
+--// Author: ChatGPT Rebuild
+
+-- ===== Services =====
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local player = Players.LocalPlayer
+
+-- ===== Character helper =====
+local function getChar()
+    repeat task.wait() until player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    return player.Character
+end
+local character = getChar()
+local hrp = character:WaitForChild("HumanoidRootPart")
+
+-- ===== Load Fluent UI + Addons =====
+local ok, Fluent = pcall(function()
+    return loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
+end)
+if not ok or not Fluent then
+    warn("Unable to load Fluent UI")
+    return
+end
+
+local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
+local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
+
+-- ===== Create Window =====
+local Window = Fluent:CreateWindow({
+    Title = "Banana Cat Hub - WZAGRL v6.7 Final",
+    SubTitle = "By Obii (ChatGPT Rebuild)",
+    TabWidth = 160,
+    Theme = "Dark",
+    Size = UDim2.fromOffset(720, 480),
+    Acrylic = false,
+    MinimizeKey = Enum.KeyCode.End
+})
+
+-- ===== Tabs =====
+local Tabs = {
+    Home = Window:AddTab({ Title = "Tab Information" }),
+    Main = Window:AddTab({ Title = "Tab Farming" }),
+    Teleport = Window:AddTab({ Title = "Tab Teleport" }),
+    Setting = Window:AddTab({ Title = "Setting Farm" }),
+    Script = Window:AddTab({ Title = "Tab Script" }),
+    Misc = Window:AddTab({ Title = "Miscellaneous", Icon = "list-plus" }) -- Added Misc Tab
+}
+
+local FarmingTab = Tabs.Main
+local TeleportTab = Tabs.Teleport
+local SettingTab = Tabs.Setting
+local ScriptTab = Tabs.Script
+local MiscTab = Tabs.Misc
+
+-- ===== Defaults / Variables =====
+local autofarm, farmIsland, bringAll, autoHaki = false, false, false, false
+local flySpeed, bringSpeed, flyHeight, bringDistance = 350, 100, 15, 200
+local findRange, farmRadius = 100000, 10000
+local selectedWeaponType = "Melee"
+local selectedIslandFarm = "Marine Start"
+local selectedTeleportIsland = "Marine Start"
+local flyLoop, attackLoop, hakiLoop, farmIslandThread
+local guiVisible = true
+
+-- ===== Island Lists =====
+local islandList = {
+    ["Hydar Island"] = Vector3.new(3567.22, 51.38, 1927.11),
+    ["Peanut Island"] = Vector3.new(-1943.60, 44.90, -10288.01),
+    ["Ice Cream Island"] = Vector3.new(-950.00, 59.00, -10907.00),
+    ["House Hydar Island"] = Vector3.new(5661.53, 1013.41, -334.96),
+    ["Tiki"] = Vector3.new(-16813.44, 58.29, 304.87),
+    ["Haunted Castle"] = Vector3.new(-9387.11, 141.36, 5616.04),
+    ["Mansion"] = Vector3.new(-12463.81, 374.95, -7550.29),
+    ["Port Town"] = Vector3.new(-306.00, 20.65, 5557.35),
+    ["Great Tree"] = Vector3.new(2262.59, 28.96, -6462.95),
+    ["Floating Turtle"] = Vector3.new(-11343.71, 331.76, -10339.65),
+    ["CakeLoaf"] = Vector3.new(-2106.07, 45.10, -11908.52),
+    ["castle on the sea"] = Vector3.new(-5047.54, 314.55, -3159.34),
+    ["North Poles"] = Vector3.new(-986.51, 26.67, -14087.59),
+    ["cacao Island"] = Vector3.new(471.13, 42.35, -12212.00)
+}
+
+-- ===== Intermediate Islands (trung gian) =====
+local intermediateIslands = {
+    Vector3.new(5661.53, 1013.41, -334.96), -- House Hydar Island
+    Vector3.new(-12463.81, 374.95, -7550.29), -- Mansion
+    Vector3.new(-5047.54, 314.55, -3159.34), -- castle on the sea
+    Vector3.new(-16813.44, 58.29, 304.87) -- Tiki
+}
+
+-- ===== Special Islands (tele 1 lần) =====
+local specialIslands = {
+    Vector3.new(5661.53, 1013.41, -334.96), -- House Hydar Island
+    Vector3.new(-12463.81, 374.95, -7550.29), -- Mansion
+    Vector3.new(5661.53, 1013.41, -334.96), -- House Hydar Island (lặp lại)
+    Vector3.new(-16813.44, 58.29, 304.87) -- Tiki
+}
+
+-- ===== Utilities: Enemy checks =====
+local function isValidEnemy(mob)
+    if not mob then return false end
+    local mhrp = mob:FindFirstChild("HumanoidRootPart")
+    local mh = mob:FindFirstChild("Humanoid")
+    if not mhrp or not mh then return false end
+    if mh.Health <= 0 or mh.Health > (mh.MaxHealth or math.huge) then return false end
+    local enemiesParent = workspace:FindFirstChild("Enemies") or workspace
+    if not mob:IsDescendantOf(enemiesParent) then return false end
+    if mob:FindFirstChild("Fake") or tostring(mob.Name):lower():find("fake") then return false end
+    return true
+end
+local function getNearestEnemyFrom(pos, range)
+    local closest, dist = nil, math.huge
+    local enemiesParent = workspace:FindFirstChild("Enemies") or workspace
+    for _, v in pairs(enemiesParent:GetChildren()) do
+        if isValidEnemy(v) and v:FindFirstChild("HumanoidRootPart") then
+            local d = (v.HumanoidRootPart.Position - pos).Magnitude
+            if d < dist and d <= range then
+                closest = v
+                dist = d
+            end
+        end
+    end
+    return closest
+end
+local function getNearestEnemy()
+    return getNearestEnemyFrom(hrp.Position, findRange)
+end
+
+-- ===== Fly / Bring logic =====
+local function startFly()
+    if flyLoop then flyLoop:Disconnect() end
+    local hum = character:WaitForChild("Humanoid")
+    pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+    flyLoop = RunService.RenderStepped:Connect(function()
+        pcall(function() hrp.Velocity = Vector3.new(0, 2, 0) end)
+    end)
+end
+local function stopFly()
+    if flyLoop then flyLoop:Disconnect() flyLoop = nil end
+    local hum = character:FindFirstChild("Humanoid")
+    if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end) end
+end
+local function flyAboveTarget(target)
+    if not target or not isValidEnemy(target) then return end
+    local pos = target.HumanoidRootPart.Position + Vector3.new(0, flyHeight, 0)
+    pcall(function()
+        local t = TweenService:Create(hrp, TweenInfo.new((hrp.Position - pos).Magnitude / math.max(1, flySpeed), Enum.EasingStyle.Linear), {CFrame = CFrame.new(pos)})
+        t:Play()
+    end)
+end
+local function bringEnemies(target)
+    if not target or not isValidEnemy(target) then return end
+    local enemiesParent = workspace:FindFirstChild("Enemies") or workspace
+    for _, mob in pairs(enemiesParent:GetChildren()) do
+        if isValidEnemy(mob) and mob:FindFirstChild("HumanoidRootPart") then
+            if bringAll or mob.Name == target.Name then
+                local mobHRP = mob.HumanoidRootPart
+                local dist = (mobHRP.Position - target.HumanoidRootPart.Position).Magnitude
+                if dist > 0 and dist <= bringDistance then
+                    task.spawn(function()
+                        local tweenTime = math.clamp(dist / math.max(1, bringSpeed), 0.01, 4)
+                        local tween = TweenService:Create(mobHRP, TweenInfo.new(tweenTime, Enum.EasingStyle.Linear), {CFrame = target.HumanoidRootPart.CFrame})
+                        tween:Play()
+                    end)
+                end
+            end
+        end
+    end
+end
+
+-- ===== AutoFarm main loop =====
+task.spawn(function()
+    while task.wait(0.25) do
+        if autofarm then
+            character = getChar()
+            hrp = character:FindFirstChild("HumanoidRootPart") or hrp
+            local target = getNearestEnemy()
+            if target then
+                flyAboveTarget(target)
+                bringEnemies(target)
+            end
+        end
+    end
+end)
+
+-- ===== Weapon system (stable) =====
+local function collectAllTools()
+    local all = {}
+    for _, v in pairs(player.Backpack:GetChildren()) do if v:IsA("Tool") then table.insert(all, v) end end
+    for _, v in pairs(character:GetChildren()) do if v:IsA("Tool") then table.insert(all, v) end end
+    return all
+end
+
+local function matchCategory(tool, cat)
+    local name = (tool.Name or ""):lower()
+    if cat == "Melee" then
+        return name:find("combat") or name:find("melee") or name:find("fist") or name:find("dragon")
+    elseif cat == "Sword" then
+        return name:find("katana") or name:find("saber") or name:find("sword") or name:find("yoru") or name:find("rengoku")
+    elseif cat == "Gun" then
+        return name:find("gun") or name:find("rifle") or name:find("bazooka") or name:find("musket")
+    elseif cat == "Fruit" then
+        return name:find("fruit") or name:find("blox fruit") or name:find("devil")
+    end
+    return false
+end
+
+local function getBestTool()
+    local all = collectAllTools()
+    local current = character:FindFirstChildOfClass("Tool")
+    if current and (selectedWeaponType ~= "Auto") and matchCategory(current, selectedWeaponType) then
+        return current
+    end
+    if selectedWeaponType ~= "Auto" then
+        for _, t in ipairs(all) do if matchCategory(t, selectedWeaponType) then return t end end
+    else
+        local priority = {"Melee","Sword","Gun","Fruit"}
+        for _, cat in ipairs(priority) do
+            for _, t in ipairs(all) do
+                if matchCategory(t, cat) then return t end
+            end
+        end
+    end
+    return current
+end
+
+local function equipTool(tool)
+    if not tool then return end
+    if tool.Parent == player.Backpack then
+        pcall(function() character.Humanoid:EquipTool(tool) end)
+        task.wait(0.12)
+    end
+end
+
+local function startAutoAttack()
+    if attackLoop then attackLoop:Disconnect() end
+    attackLoop = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            if not autofarm then return end
+            local tool = getBestTool()
+            if tool then
+                if tool.Parent ~= character then
+                    equipTool(tool)
+                else
+                    pcall(function() tool:Activate() end)
+                end
+            end
+        end)
+    end)
+end
+
+local function stopAutoAttack()
+    if attackLoop then attackLoop:Disconnect() attackLoop = nil end
+end
+
+-- ===== Auto Buso Haki =====
+local function isBusoActive()
+    if not character then return false end
+    for _, v in pairs(character:GetChildren()) do
+        if v:IsA("ParticleEmitter") then
+            local n = (v.Name or ""):lower()
+            if n:find("bus") or n:find("armament") or n:find("haki") then return true end
+        end
+    end
+    return false
+end
+
+local function sendBuso()
+    local rem = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
+    local buso = rem:FindFirstChild("Buso") or rem:FindFirstChild("ToggleBuso") or rem:FindFirstChild("buso")
+    if buso and buso.FireServer then
+        pcall(function() buso:FireServer("Buso") end)
+    elseif buso and buso.InvokeServer then
+        pcall(function() buso:InvokeServer("Buso") end)
+    end
+end
+
+local function startBusoLoop()
+    if hakiLoop then hakiLoop:Disconnect() end
+    hakiLoop = RunService.Heartbeat:Connect(function()
+        pcall(function()
+            if autoHaki and character and not isBusoActive() then
+                sendBuso()
+            end
+        end)
+    end)
+end
+
+local function stopBusoLoop()
+    if hakiLoop then hakiLoop:Disconnect() hakiLoop = nil end
+end
+
+-- ===== Teleport / Fly Tween Safe logic =====
+local function tweenToPosition(pos, speed)
+    if not pos then return end
+    local dist = (hrp.Position - pos).Magnitude
+    local info = TweenInfo.new(math.max(0.05, dist / math.max(1, speed)), Enum.EasingStyle.Linear)
+    local success, err = pcall(function()
+        local tween = TweenService:Create(hrp, info, {CFrame = CFrame.new(pos)})
+        tween:Play()
+        tween.Completed:Wait()
+    end)
+    if not success then
+        pcall(function() hrp.CFrame = CFrame.new(pos) end)
+    end
+end
+
+local function safeTeleportTo(dest)
+    if not dest then return end
+    local isSpecial = false
+    for _, pos in ipairs(specialIslands) do
+        if (pos - dest).Magnitude < 1 then isSpecial = true break end
+    end
+    if isSpecial then
+        local startTime = tick()
+        while tick() - startTime < 2 do
+            pcall(function() hrp.CFrame = CFrame.new(dest) end)
+            task.wait(0.1)
+        end
+        return
+    end
+
+    local nearestIntermediate = nil
+    local nearestDist = math.huge
+    for _, pos in ipairs(intermediateIslands) do
+        local dToDest = (pos - dest).Magnitude
+        local dFromMe = (hrp.Position - dest).Magnitude
+        if dToDest < dFromMe and dToDest < nearestDist then
+            nearestDist = dToDest
+            nearestIntermediate = pos
+        end
+    end
+
+    if nearestIntermediate then
+        pcall(function() hrp.CFrame = CFrame.new(nearestIntermediate) end)
+        task.wait(0.25)
+    end
+
+    tweenToPosition(dest, flySpeed)
+end
+
+-- ===== GUI: Farming Tab =====
+FarmingTab:AddToggle("FarmAura", {
+    Title = "Farm Aura",
+    Default = false,
+    Callback = function(v)
+        autofarm = v
+        if v then
+            startFly()
+            startAutoAttack()
+            startBusoLoop()
+            Fluent:Notify({Title="Farm",Content="Farm Aura Enabled",Duration=2})
+        else
+            stopFly()
+            stopAutoAttack()
+            stopBusoLoop()
+            Fluent:Notify({Title="Farm",Content="Farm Aura Disabled",Duration=2})
+        end
+    end
+})
+
+FarmingTab:AddToggle("BringAll", {
+    Title = "Bring All Mob",
+    Default = false,
+    Callback = function(v)
+        bringAll = v
+        Fluent:Notify({Title="Bring", Content = v and "Bring All ON" or "Bring All OFF", Duration=2})
+    end
+})
+
+-- ===== GUI: Teleport Tab =====
+TeleportTab:AddDropdown("SelectedIsland", {
+    Title = "Selected Island",
+    Values = (function() local t = {} for k,_ in pairs(islandList) do table.insert(t,k) end return t end)(),
+    Default = "SelectedIssland",
+    Multi = false,
+    Callback = function(v) selectedTeleportIsland = v end
+})
+
+TeleportTab:AddButton({
+    Title = "Teleport Safe (TeleLoop)",
+    Description = "Fly to island using intermediate safe points (loop if special)",
+    Callback = function()
+        local dest = islandList[selectedTeleportIsland]
+        if not dest then Fluent:Notify({Title="Teleport",Content="Island invalid",Duration=2}) return end
+        safeTeleportTo(dest)
+        Fluent:Notify({Title="Teleport",Content="Arrived: "..selectedTeleportIsland,Duration=2})
+    end
+})
+
+-- ===== GUI: Setting Tab =====
+SettingTab:AddInput("FlySpeed", { Title = "Fly Speed", Default = flySpeed, Numeric = true, Callback = function(v) if tonumber(v) then flySpeed = tonumber(v) end end })
+SettingTab:AddInput("BringSpeed", { Title = "Bring Speed", Default = bringSpeed, Numeric = true, Callback = function(v) if tonumber(v) then bringSpeed = tonumber(v) end end })
+SettingTab:AddInput("FlyHeight", { Title = "Fly Height", Default = flyHeight, Numeric = true, Callback = function(v) if tonumber(v) then flyHeight = tonumber(v) end end })
+SettingTab:AddInput("BringDistance", { Title = "Bring Distance", Default = bringDistance, Numeric = true, Callback = function(v) if tonumber(v) then bringDistance = tonumber(v) end end })
+SettingTab:AddParagraph({ Title = "Find Range", Content = "Khoảng cách tìm mob cố định: 100000" })
+
+SettingTab:AddDropdown("WeaponSelect", {
+    Title = "Weapon Type",
+    Values = { "Auto", "Melee", "Sword", "Gun", "Fruit" },
+    Default = "Melee",
+    Multi = false,
+    Callback = function(v)
+        selectedWeaponType = v
+        Fluent:Notify({ Title = "Weapon", Content = "Selected: "..v, Duration = 2 })
+    end
+})
+
+SettingTab:AddToggle("AutoHakiBuso", {
+    Title = "Auto Haki Buso",
+    Default = false,
+    Callback = function(v)
+        autoHaki = v
+        if v then startBusoLoop() else stopBusoLoop() end
+    end
+})
+
+SettingTab:AddButton({
+    Title = "Bật Haki Buso",
+    Description = "Bật Haki thủ công",
+    Callback = function()
+        sendBuso()
+        Fluent:Notify({Title="Haki",Content="Sent Buso request",Duration=2})
+    end
+})
+
+
+-- ===== GUI: Script Tab =====
+ScriptTab:AddButton({
+    Title = "Marines (Luarmor)",
+    Description = "Join Marines + run Luarmor loader",
+    Callback = function()
+        task.spawn(function()
+            getgenv().team = "Marines"
+            repeat task.wait() until game:IsLoaded() and player:FindFirstChild("DataLoaded")
+            pcall(function()
+                loadstring(game:HttpGet("https://api.luarmor.net/files/v3/loaders/beab72edac68fb260ca9d214e83e2606.lua"))()
+            end)
+        end)
+    end
+})
+
+ScriptTab:AddButton({
+    Title = "Banana Cat Hub Real",
+    Description = "Run Banana Cat Hub Real",
+    Callback = function()
+        task.spawn(function()
+            repeat task.wait() until game:IsLoaded() and player
+            getgenv().Key = "232a14385099bd4d3f48378b"
+            pcall(function()
+                loadstring(game:HttpGet("https://raw.githubusercontent.com/obiiyeuem/vthangsitink/main/BananaHub.lua"))()
+            end)
+        end)
+    end
+})
+
+-- ===== GUI: Misc Tab =====
+-- Gắn Misc tab với SaveManager + InterfaceManager
+SaveManager:SetLibrary(Fluent)
+InterfaceManager:SetLibrary(Fluent)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({"MenuKeybind"})
+InterfaceManager:SetFolder("WZAGRL_HUB")
+SaveManager:SetFolder("WZAGRL_HUB/configs")
+InterfaceManager:BuildInterfaceSection(MiscTab)
+SaveManager:BuildConfigSection(MiscTab)
+
+-- Ví dụ Misc Toggle + Button
+MiscTab:AddParagraph({
+    Title = "Miscellaneous Settings",
+    Content = "Các chức năng khác bạn muốn thêm vào Misc tab."
+})
+
+MiscTab:AddToggle("EnableMiscFeature", {
+    Title = "Bật tính năng Misc",
+    Default = false,
+    Callback = function(v)
+        Fluent:Notify({Title="Misc", Content="Feature: "..tostring(v), Duration=2})
+    end
+})
+
+MiscTab:AddButton({
+    Title = "Run External Script",
+    Callback = function()
+        local success, err = pcall(function()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/advxzivhsjjdhxhsidifvsh/mobkeyboard/main/main.txt", true))()
+        end)
+        if not success then
+            Fluent:Notify({Title="Lỗi", Content="Không thể chạy script: "..err, Duration=3})
+        end
+    end
+})
+
+-- ===== Circular Toggle Button (bottom-left, draggable, change image via TOGGLE_BUTTON_IMAGE) =====
+local toggleGui = Instance.new("ScreenGui")
+toggleGui.Name = "WZAGRL_Toggle_Button_Circle"
+toggleGui.ResetOnSpawn = false
+toggleGui.Parent = CoreGui
+
+local circleBtn = Instance.new("ImageButton")
+circleBtn.Name = "BananaToggle"
+circleBtn.Parent = toggleGui
+circleBtn.AnchorPoint = Vector2.new(0, 1) -- position based on bottom-left
+circleBtn.BackgroundTransparency = 1
+circleBtn.Size = TOGGLE_BUTTON_SIZE
+circleBtn.Position = TOGGLE_BUTTON_POS
+circleBtn.ZIndex = 999999
+circleBtn.AutoButtonColor = false
+circleBtn.Image = TOGGLE_BUTTON_IMAGE -- leave empty string for solid background
+circleBtn.ScaleType = Enum.ScaleType.Fit
+circleBtn.Modal = false
+
+-- background frame and styling
+local circleBg = Instance.new("Frame", circleBtn)
+circleBg.Name = "Bg"
+circleBg.Size = UDim2.fromScale(1,1)
+circleBg.Position = UDim2.fromOffset(0,0)
+circleBg.BackgroundTransparency = 0
+circleBg.BackgroundColor3 = Color3.fromRGB(30,30,30)
+circleBg.BorderSizePixel = 0
+circleBg.ZIndex = 1
+circleBg.AnchorPoint = Vector2.new(0,0)
+
+-- image overlay (if user didn't set Image, we create a label)
+local img = Instance.new("ImageLabel", circleBtn)
+img.Name = "Img"
+img.Size = UDim2.fromScale(0.92,0.92)
+img.Position = UDim2.fromScale(0.04,0.04)
+img.BackgroundTransparency = 1
+img.ZIndex = 2
+img.Image = TOGGLE_BUTTON_IMAGE
+
+-- rounded corners
+local bgCorner = Instance.new("UICorner", circleBg)
+bgCorner.CornerRadius = UDim.new(1,0)
+local imgCorner = Instance.new("UICorner", img)
+imgCorner.CornerRadius = UDim.new(1,0)
+
+-- shadow stroke
+local stroke = Instance.new("UIStroke", circleBg)
+stroke.Thickness = 1
+stroke.Color = Color3.fromRGB(80,80,80)
+stroke.Transparency = 0.5
+
+-- draggable
+circleBtn.Active = true
+circleBtn.Draggable = true
+
+-- hover enlarge
+local hoverTweenInfo = TweenInfo.new(0.12, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+local normalSize = circleBtn.Size
+local hoverSize = UDim2.new(normalSize.X.Scale, normalSize.X.Offset+8, normalSize.Y.Scale, normalSize.Y.Offset+8)
+local function onHover()
+    pcall(function() TweenService:Create(circleBtn, hoverTweenInfo, {Size=hoverSize}):Play() end)
+end
+local function onUnhover()
+    pcall(function() TweenService:Create(circleBtn, hoverTweenInfo, {Size=normalSize}):Play() end)
+end
+
+circleBtn.MouseEnter:Connect(onHover)
+circleBtn.MouseLeave:Connect(onUnhover)
+
+-- click behaviour: toggle Window visibility
+circleBtn.MouseButton1Click:Connect(function()
+    guiVisible = not guiVisible
+    Window.Enabled = guiVisible
+    -- small pop animation
+    pcall(function()
+        local t1 = TweenService:Create(circleBtn, TweenInfo.new(0.06), {Size = hoverSize})
+        local t2 = TweenService:Create(circleBtn, TweenInfo.new(0.06), {Size = normalSize})
+        t1:Play(); task.wait(0.06); t2:Play()
+    end)
+end)
+
+-- hint tooltip on right-click: open settings image change (simple)
+circleBtn.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+        -- show a simple notification telling how to change image
+        Fluent:Notify({Title="Toggle Button", Content="To change the button image: edit TOGGLE_BUTTON_IMAGE variable.", Duration=3})
+    end
+end)
+
+
+-- ===== Character respawn handling =====
+player.CharacterAdded:Connect(function()
+    task.wait(1)
+    character = getChar()
+    hrp = character:WaitForChild("HumanoidRootPart")
+    if autofarm then
+        startFly()
+        startAutoAttack()
+        startBusoLoop()
+    end
+end)
+
+-- ===== Final notify =====
+Fluent:Notify({ Title = "WZAGRL HUB v6.7", Content = "Full Final Loaded — Toggle button at bottom-left (C).", Duration = 4 })
