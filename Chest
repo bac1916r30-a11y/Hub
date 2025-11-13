@@ -1,0 +1,245 @@
+-- Services
+local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local Player = Players.LocalPlayer
+local PlayerGui = Player:WaitForChild("PlayerGui")
+
+--------------------------------------------------------------------
+-- ✅ WORLD SETUP
+--------------------------------------------------------------------
+local World1 = game.PlaceId == 85211729168715
+local World2 = game.PlaceId == 79091703265657
+local World3 = game.PlaceId == 100117331123089
+
+local IntermediateIslands = {}
+
+if World1 then
+    IntermediateIslands = {
+        {name="Sky2", pos=Vector3.new(-4607.82, 872.58, -1667.56)},
+        {name="UnderWater", pos=Vector3.new(61163.85, 5.34, 1819.78)},
+        {name="Whirlpool", pos=Vector3.new(3864.69, 5.41, -1926.21)},
+    }
+elseif World2 then
+    IntermediateIslands = {
+        {name="GhostShipGate",   pos=Vector3.new(-6505.30, 83.22, -126.66)},
+        {name="GhostShip",       pos=Vector3.new(923.21, 135.98, 32852.83)},
+        {name="FlamingoMansion", pos=Vector3.new(-287.53, 306.17, 597.60)},
+        {name="FlamingoRoom",    pos=Vector3.new(2284.01, 15.19, 908.03)},
+    }
+elseif World3 then
+    IntermediateIslands = {
+        {name="HouseHydarIsland", pos=Vector3.new(5661.53, 1013.41, -334.96)},
+        {name="Mansion",          pos=Vector3.new(-12463.81, 374.95, -7550.29)},
+        {name="CastleOnTheSea",   pos=Vector3.new(-5047.54, 314.55, -3159.34)},
+    }
+end
+
+local Sky3Pos = Vector3.new(-7894.62, 5545.49, -380.25) -- Chest Y>5000 sẽ teleport đến đây
+
+--------------------------------------------------------------------
+-- ✅ GUI TOGGLE AUTO FARM
+--------------------------------------------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AutoFarmChestGui"
+screenGui.Parent = PlayerGui
+
+local toggleButton = Instance.new("TextButton")
+toggleButton.Size = UDim2.new(0, 150, 0, 50)
+toggleButton.Position = UDim2.new(0, 20, 0, 20)
+toggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+toggleButton.TextColor3 = Color3.new(1, 1, 1)
+toggleButton.Font = Enum.Font.SourceSansBold
+toggleButton.TextSize = 24
+toggleButton.Text = "Auto Chest: OFF"
+toggleButton.Parent = screenGui
+
+local autoChestEnabled = false
+
+--------------------------------------------------------------------
+-- ✅ Fly GUI V3 function
+--------------------------------------------------------------------
+local function enableFly()
+    if _G.FlyRunning then return end
+    _G.FlyRunning = true
+
+    local plr = Player
+    local char = plr.Character or plr.CharacterAdded:Wait()
+    local hum = char:FindFirstChildWhichIsA("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+
+    if not hum or not root then return end
+
+    hum.PlatformStand = true
+
+    local ctrl = {f=0,b=0,l=0,r=0}
+    local speed = 50
+
+    local bg = Instance.new("BodyGyro", root)
+    bg.P = 9e4
+    bg.maxTorque = Vector3.new(9e9,9e9,9e9)
+    bg.CFrame = root.CFrame
+
+    local bv = Instance.new("BodyVelocity", root)
+    bv.Velocity = Vector3.new(0,0.1,0)
+    bv.MaxForce = Vector3.new(9e9,9e9,9e9)
+
+    spawn(function()
+        while _G.FlyRunning and hum.Health > 0 do
+            RunService.RenderStepped:Wait()
+            local moveVec = (root.CFrame.LookVector * (ctrl.f + ctrl.b) + root.CFrame.RightVector * (ctrl.l + ctrl.r)) * speed * 0.03
+            root.Velocity = moveVec
+            bg.CFrame = workspace.CurrentCamera.CFrame
+        end
+    end)
+
+    _G.FlyBG = bg
+    _G.FlyBV = bv
+end
+
+local function disableFly()
+    if not _G.FlyRunning then return end
+    _G.FlyRunning = false
+
+    local char = Player.Character
+    if char then
+        local hum = char:FindFirstChildWhichIsA("Humanoid")
+        if hum then hum.PlatformStand = false end
+    end
+
+    if _G.FlyBG then _G.FlyBG:Destroy() _G.FlyBG = nil end
+    if _G.FlyBV then _G.FlyBV:Destroy() _G.FlyBV = nil end
+end
+
+--------------------------------------------------------------------
+-- ✅ Teleport trung gian
+--------------------------------------------------------------------
+local function getIntermediateTeleport(playerPos, chestPos)
+    local directDist = (Vector2.new(playerPos.X, playerPos.Z) - Vector2.new(chestPos.X, chestPos.Z)).Magnitude
+    local bestIsland = nil
+    local islandDist = math.huge
+
+    for _, island in ipairs(IntermediateIslands) do
+        local dist = (Vector2.new(island.pos.X, island.pos.Z) - Vector2.new(chestPos.X, chestPos.Z)).Magnitude
+        if dist < islandDist then
+            islandDist = dist
+            bestIsland = island
+        end
+    end
+
+    if bestIsland and islandDist < directDist then
+        return bestIsland
+    end
+    return nil
+end
+
+local function teleportSpam(position, duration)
+    local char = Player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = char.HumanoidRootPart
+    local timeout = tick() + duration
+    while tick() < timeout do
+        hrp.CFrame = CFrame.new(position + Vector3.new(0,2,0))
+        task.wait()
+    end
+end
+
+--------------------------------------------------------------------
+-- ✅ Fly to chest bằng TweenService + Fly GUI V3
+--------------------------------------------------------------------
+local function flyToChest(targetPos, maxSpeed, minSpeed, slowDistance)
+    local char = Player.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = char.HumanoidRootPart
+
+    local distance = (targetPos - hrp.Position).Magnitude
+    local duration = distance / maxSpeed
+    local goal = {CFrame = CFrame.new(targetPos.X, targetPos.Y + 2, targetPos.Z)}
+
+    local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Linear), goal)
+    local conn
+    conn = RunService.Heartbeat:Connect(function()
+        local dirVec = targetPos - hrp.Position
+        local dist = dirVec.Magnitude
+        if dist > 0 then
+            local speed = maxSpeed
+            if dist < slowDistance then
+                speed = minSpeed + (maxSpeed - minSpeed) * (dist / slowDistance)
+            end
+            if _G.FlyRunning then
+                hrp.CFrame = hrp.CFrame + dirVec.Unit * speed * 0.03
+            end
+        end
+    end)
+
+    tween:Play()
+    tween.Completed:Wait()
+    conn:Disconnect()
+end
+
+--------------------------------------------------------------------
+-- ✅ Toggle Button logic
+--------------------------------------------------------------------
+toggleButton.MouseButton1Click:Connect(function()
+    autoChestEnabled = not autoChestEnabled
+    if autoChestEnabled then
+        toggleButton.Text = "Auto Chest: ON"
+        toggleButton.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+        enableFly()
+    else
+        toggleButton.Text = "Auto Chest: OFF"
+        toggleButton.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+        disableFly()
+    end
+end)
+
+--------------------------------------------------------------------
+-- ✅ Auto Farm Loop
+--------------------------------------------------------------------
+spawn(function()
+    while task.wait(0.1) do
+        if autoChestEnabled then
+            pcall(function()
+                local char = Player.Character
+                if not char then return end
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if not hrp then return end
+
+                local chests = CollectionService:GetTagged("_ChestTagged")
+                local nearest, minDist = nil, math.huge
+                for _, chest in ipairs(chests) do
+                    if not chest:GetAttribute("IsDisabled") then
+                        local chestPos = chest:GetPivot().Position
+                        -- Bỏ qua chest Y < 0
+                        if chestPos.Y >= 0 then
+                            local dist = (chestPos - hrp.Position).Magnitude
+                            if dist < minDist then
+                                nearest = chest
+                                minDist = dist
+                            end
+                        end
+                    end
+                end
+
+                if nearest then
+                    local chestPos = nearest:GetPivot().Position
+
+                    -- Teleport đến Sky3 nếu chest Y > 5000
+                    if chestPos.Y > 5000 then
+                        teleportSpam(Sky3Pos, 1.5)
+                    else
+                        local island = getIntermediateTeleport(hrp.Position, chestPos)
+                        if island then
+                            teleportSpam(island.pos, 1.5)
+                        end
+                    end
+
+                    flyToChest(chestPos, 350, 20, 10)
+                    task.wait(0.2)
+                end
+            end)
+        end
+    end
+end)
