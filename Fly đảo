@@ -1,0 +1,421 @@
+--[[============================================================================
+   Fly Đảo Thông Minh (BodyVelocity version)
+   - Fly sử dụng BodyVelocity (speed giảm khi gần đích)
+   - Noclip bật trong lúc fly
+   - Dropdown chọn đảo (ẩn sau khi chọn)
+   - Toggle Fly: nếu chưa chọn đảo -> tự off
+   - Logic trung gian (World1/2/3) + Tele loop 2s
+   - Dừng fly ngay khi tắt toggle giữa chừng
+   - Toggle ngoài GUI để ẩn/hiện GUI chính
+   - GUI + Toggle có thể kéo (draggable)
+   - Ghi chú: script dùng LocalPlayer, chạy client-side
+============================================================================]]--
+
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- Player references
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Config
+local FLY_SPEED = 350 -- max units per second
+local MIN_SPEED = 20 -- min speed when close
+local INTERMEDIATE_LOOP_SECONDS = 2
+local TELE_OFFSET_Y = 25
+local TELE_LOOP_INTERVAL = 0.2
+local SLOW_DIST = 10 -- studs for speed reduction
+
+-- Utility
+local function distanceXZ(a, b)
+    return (Vector2.new(a.X, a.Z) - Vector2.new(b.X, b.Z)).Magnitude
+end
+
+-- ---------------------------
+--  Build GUI
+-- ---------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "FlyIslandGUI_BV"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = PlayerGui
+
+-- Main Frame
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 300, 0, 260)
+mainFrame.Position = UDim2.new(0.5, -150, 0.5, -130)
+mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
+Instance.new("UICorner", mainFrame)
+
+local title = Instance.new("TextLabel", mainFrame)
+title.Size = UDim2.new(1, 0, 0, 36)
+title.Position = UDim2.new(0, 0, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "🌴 Fly Đảo Thông Minh (BV)"
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 18
+title.TextColor3 = Color3.new(1,1,1)
+
+-- Dropdown
+local dropdownBtn = Instance.new("TextButton", mainFrame)
+dropdownBtn.Size = UDim2.new(1, -20, 0, 34)
+dropdownBtn.Position = UDim2.new(0, 10, 0, 46)
+dropdownBtn.BackgroundColor3 = Color3.fromRGB(55,55,70)
+dropdownBtn.TextColor3 = Color3.new(1,1,1)
+dropdownBtn.Font = Enum.Font.SourceSans
+dropdownBtn.TextSize = 16
+dropdownBtn.Text = "Chọn Đảo ▼"
+Instance.new("UICorner", dropdownBtn)
+
+local scroll = Instance.new("ScrollingFrame", mainFrame)
+scroll.Size = UDim2.new(1, -20, 0, 140)
+scroll.Position = UDim2.new(0, 10, 0, 86)
+scroll.BackgroundColor3 = Color3.fromRGB(45,45,60)
+scroll.ScrollBarThickness = 6
+scroll.Visible = false
+Instance.new("UICorner", scroll)
+
+local listLayout = Instance.new("UIListLayout", scroll)
+listLayout.Padding = UDim.new(0, 6)
+listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 6)
+end)
+
+-- Fly Toggle
+local flyToggleBtn = Instance.new("TextButton", mainFrame)
+flyToggleBtn.Size = UDim2.new(1, -20, 0, 34)
+flyToggleBtn.Position = UDim2.new(0, 10, 1, -42)
+flyToggleBtn.BackgroundColor3 = Color3.fromRGB(80,80,100)
+flyToggleBtn.TextColor3 = Color3.new(1,1,1)
+flyToggleBtn.Font = Enum.Font.SourceSansBold
+flyToggleBtn.TextSize = 16
+flyToggleBtn.Text = "Fly: Tắt"
+Instance.new("UICorner", flyToggleBtn)
+
+-- Mini toggle
+local miniToggle = Instance.new("Frame")
+miniToggle.Size = UDim2.new(0, 36, 0, 36)
+miniToggle.Position = UDim2.new(0, 10, 0, 10)
+miniToggle.BackgroundColor3 = Color3.fromRGB(45,45,55)
+miniToggle.Active = true
+miniToggle.Draggable = true
+miniToggle.Parent = screenGui
+Instance.new("UICorner", miniToggle)
+
+local miniBtn = Instance.new("TextButton", miniToggle)
+miniBtn.Size = UDim2.new(1, 0, 1, 0)
+miniBtn.BackgroundTransparency = 1
+miniBtn.Text = "GUI"
+miniBtn.Font = Enum.Font.SourceSansBold
+miniBtn.TextSize = 14
+miniBtn.TextColor3 = Color3.new(1,1,1)
+
+-- ---------------------------
+--  Island Data (3 Worlds)
+-- ---------------------------
+local PlaceId = game.PlaceId
+local Islands = {}
+local Intermediates = {}
+
+if PlaceId == 85211729168715 then -- World1
+    Islands = {
+        ["Marine Start"] = Vector3.new(-2573.34, 15.89, 2047.00),
+        ["Start Island"] = Vector3.new(1071.28, 25.31, 1426.87),
+        ["Middle Town"] = Vector3.new(-655.82, 15.89, 1436.68),
+        ["Jungle"] = Vector3.new(-1249.77, 20.89, 341.36),
+        ["Pirate Village"] = Vector3.new(-1122.35, 10.79, 3855.92),
+        ["Desert"] = Vector3.new(1094.15, 15.47, 4192.89),
+        ["Frozen Village"] = Vector3.new(1198.01, 35.01, -1211.73),
+        ["MarineFord"] = Vector3.new(-4505.38, 30.69, 4260.56),
+        ["Thành Phố đài Phun Nước"] = Vector3.new(5132.71, 10.54, 4037.86),
+        ["Colosseum"] = Vector3.new(-1428.35, 15.39, -3014.37),
+        ["sky 1"] = Vector3.new(-4970.22, 717.71, -2622.35),
+        ["sky 2"] = Vector3.new(-4607.82, 872.58, -1667.56),
+        ["sky 3"] = Vector3.new(-7894.62, 5545.49, -380.25),
+        ["Làng Macma"] = Vector3.new(-5231.76, 15.62, 8467.88),
+        ["Prison"] = Vector3.new(4854.16, 15.17, 740.19),
+        ["UndeyWater City"] = Vector3.new(61163.85, 5.34, 1819.78),
+        ["whirlpool"] = Vector3.new(3864.69, 5.41, -1926.21),
+        ["Shank's Room"] = Vector3.new(-1442.17, 29.88, -28.35),
+    }
+    Intermediates = {"sky 2", "sky 3", "UndeyWater City", "whirlpool"}
+
+elseif PlaceId == 79091703265657 then -- World2
+    Islands = {
+        ["Magma Side"] = Vector3.new(-5478.39, 30.98, -5246.91),
+        ["Ghost Island"] = Vector3.new(-5571.84, 200.18, -795.43),
+        ["Hot and Cold"] = Vector3.new(-6026.96, 20.75, -5071.96),
+        ["First Spot"] = Vector3.new(82.95, 25.07, 2834.99),
+        ["Snow Mountain"] = Vector3.new(1384.68, 470.57, -4990.10),
+        ["Green bit"] = Vector3.new(-2372.15, 80.99, -3166.51),
+        ["Cafe"] = Vector3.new(-385.25, 80.05, 297.39),
+        ["Forgotten Island"] = Vector3.new(-3043.32, 250.88, -10191.58),
+        ["Frosted Island"] = Vector3.new(5400.40, 35.22, -6236.99),
+        ["Flarningo Mansion"] = Vector3.new(-287.53, 306.17, 597.60),
+        ["Flamingo Roorn"] = Vector3.new(2284.01, 15.19, 908.03),
+        ["cửa thuyền ma"] = Vector3.new(-6505.30, 83.22, -126.66),
+        ["Factroy"] = Vector3.new(430.43, 230.02, -432.50),
+        ["raid low"] = Vector3.new(-5554.95, 340.08, -5930.31),
+        ["thuyền ma"] = Vector3.new(923.21, 135.98, 32852.83),
+        ["raid fruit"] = Vector3.new(-6445.45, 270.68, -4486.27),
+    }
+    Intermediates = {"Flarningo Mansion", "Flamingo Roorn", "cửa thuyền ma"}
+
+elseif PlaceId == 100117331123089 then -- World3
+    Islands = {
+        ["Hydar Island"] = Vector3.new(3567.22, 51.38, 1927.11),
+        ["Peanut Island"] = Vector3.new(-1943.60, 44.90, -10288.01),
+        ["Ice Cream Island"] = Vector3.new(-950.00, 59.00, -10907.00),
+        ["House Hydar Island"] = Vector3.new(5661.53, 1013.41, -334.96),
+        ["Tiki"] = Vector3.new(-16813.44, 58.29, 304.87),
+        ["Haunted Castle"] = Vector3.new(-9387.11, 141.36, 5616.04),
+        ["Mansion"] = Vector3.new(-12463.81, 374.95, -7550.29),
+        ["Port Town"] = Vector3.new(-306.00, 20.65, 5557.35),
+        ["Great Tree"] = Vector3.new(2262.59, 28.96, -6462.95),
+        ["Floating Turtle"] = Vector3.new(-10016.00, 332.00, -8326.00),
+        ["Room Enma/Yama"] = Vector3.new(5251.19, 23.92, 450.37),
+        ["Secret Temple"] = Vector3.new(5692.08, 21.01, 324.07),
+        ["CakeLoaf"] = Vector3.new(-2106.07, 45.10, -11908.52),
+        ["castle on the sea"] = Vector3.new(-5047.54, 314.55, -3159.34),
+        ["North Poles"] = Vector3.new(-986.51, 26.67, -14087.59),
+        ["cacao Island"] = Vector3.new(471.13, 42.35, -12212.00),
+        ["Đỉnh Great Tree"] = Vector3.new(3028.84, 2280.85, -7324.78),
+    }
+    Intermediates = {"Mansion", "castle on the sea", "House Hydar Island"}
+
+else
+    dropdownBtn.Text = "⚠ Không xác định World!"
+end
+
+-- ---------------------------
+--  Populate dropdown
+-- ---------------------------
+local chosenIslandName = nil
+for name, pos in pairs(Islands) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -8, 0, 30)
+    btn.BackgroundColor3 = Color3.fromRGB(65,65,80)
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.SourceSans
+    btn.TextSize = 14
+    btn.Text = name
+    btn.Parent = scroll
+    Instance.new("UICorner", btn)
+
+    btn.MouseButton1Click:Connect(function()
+        chosenIslandName = name
+        dropdownBtn.Text = "Đã chọn: " .. name .. " ▼"
+        scroll.Visible = false
+    end)
+end
+
+dropdownBtn.MouseButton1Click:Connect(function()
+    scroll.Visible = not scroll.Visible
+end)
+
+-- ---------------------------
+--  Flying logic using BodyVelocity
+-- ---------------------------
+local isFlying = false
+local noclipConn = nil
+local bv = nil
+
+local function getHRP()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    return char:WaitForChild("HumanoidRootPart")
+end
+
+local function startNoclip()
+    if noclipConn then return end
+    noclipConn = RunService.Stepped:Connect(function()
+        local char = LocalPlayer.Character
+        if not char then return end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+end
+
+local function stopNoclip()
+    if noclipConn then
+        noclipConn:Disconnect()
+        noclipConn = nil
+    end
+    local char = LocalPlayer.Character
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+local function cancelFlyNow()
+    isFlying = false
+    if bv and bv.Parent then
+        bv:Destroy()
+        bv = nil
+    end
+    stopNoclip()
+end
+
+local function teleportLoop(pos)
+    local hrp = getHRP()
+    local deadline = tick() + INTERMEDIATE_LOOP_SECONDS
+    repeat
+        if not isFlying then break end
+        hrp.CFrame = CFrame.new(pos + Vector3.new(0, TELE_OFFSET_Y, 0))
+        task.wait(TELE_LOOP_INTERVAL)
+    until tick() >= deadline or not isFlying
+end
+
+local function flyToPosition(targetPos)
+    local hrp = getHRP()
+    if not hrp then return end
+    if not bv or not bv.Parent then
+        bv = Instance.new("BodyVelocity")
+        bv.MaxForce = Vector3.new(1e5,1e5,1e5)
+        bv.Velocity = Vector3.new(0,0,0)
+        bv.Parent = hrp
+    end
+
+    while isFlying do
+        local dir = (targetPos + Vector3.new(0, TELE_OFFSET_Y,0)) - hrp.Position
+        local dist = dir.Magnitude
+        if dist < 1 then break end
+
+        -- Giảm tốc khi gần đích
+        local speed = dist <= SLOW_DIST and MIN_SPEED or FLY_SPEED
+        if dist < SLOW_DIST then
+            speed = MIN_SPEED + (FLY_SPEED - MIN_SPEED) * (dist / SLOW_DIST)
+        end
+
+        bv.Velocity = dir.Unit * speed
+        task.wait(0.03)
+    end
+
+    if bv and bv.Parent then
+        bv:Destroy()
+        bv = nil
+    end
+end
+
+local function isIntermediate(name)
+    return table.find(Intermediates, name) ~= nil
+end
+
+local function findNearestIntermediateToTarget(targetPos)
+    local bestName, bestDist = nil, nil
+    for _, name in ipairs(Intermediates) do
+        local ipos = Islands[name]
+        if ipos then
+            local d = distanceXZ(ipos, targetPos)
+            if not bestDist or d < bestDist then
+                bestDist = d
+                bestName = name
+            end
+        end
+    end
+    return bestName
+end
+
+local function performFlySequence(name)
+    if not name then return end
+    local targetPos = Islands[name]
+    if not targetPos then return end
+
+    isFlying = true
+    startNoclip()
+    local hrp = getHRP()
+
+    if isIntermediate(name) then
+        teleportLoop(targetPos)
+        isFlying = false
+        stopNoclip()
+        return
+    end
+
+    local nearestInterName = findNearestIntermediateToTarget(targetPos)
+    local nearestInterPos = nearestInterName and Islands[nearestInterName] or nil
+    local playerPos = hrp.Position
+    local dPlayerTarget = distanceXZ(playerPos, targetPos)
+    local dInterTarget = nearestInterPos and distanceXZ(nearestInterPos, targetPos) or math.huge
+
+    if dPlayerTarget <= dInterTarget then
+        hrp.CFrame = CFrame.new(playerPos.X, targetPos.Y + TELE_OFFSET_Y, playerPos.Z)
+        flyToPosition(targetPos)
+    else
+        teleportLoop(nearestInterPos)
+        if not isFlying then stopNoclip() return end
+        local curPos = hrp.Position
+        hrp.CFrame = CFrame.new(curPos.X, targetPos.Y + TELE_OFFSET_Y, curPos.Z)
+        flyToPosition(targetPos)
+    end
+
+    isFlying = false
+    stopNoclip()
+end
+
+-- ---------------------------
+--  Toggle handlers
+-- ---------------------------
+local flyEnabled = false
+
+local function updateFlyButtonVisual()
+    if flyEnabled then
+        flyToggleBtn.Text = "Fly: Bật"
+        flyToggleBtn.BackgroundColor3 = Color3.fromRGB(0,170,100)
+    else
+        flyToggleBtn.Text = "Fly: Tắt"
+        flyToggleBtn.BackgroundColor3 = Color3.fromRGB(80,80,100)
+    end
+end
+
+flyToggleBtn.MouseButton1Click:Connect(function()
+    flyEnabled = not flyEnabled
+    if flyEnabled and (not chosenIslandName or not Islands[chosenIslandName]) then
+        flyEnabled = false
+        updateFlyButtonVisual()
+        dropdownBtn.Text = "⚠ Chưa chọn đảo!"
+        task.delay(1.2, function()
+            dropdownBtn.Text = (chosenIslandName and ("Đã chọn: "..chosenIslandName.." ▼") or "Chọn Đảo ▼")
+        end)
+        return
+    end
+    updateFlyButtonVisual()
+    if flyEnabled then
+        task.spawn(function()
+            performFlySequence(chosenIslandName)
+            flyEnabled = false
+            updateFlyButtonVisual()
+        end)
+    else
+        cancelFlyNow()
+        updateFlyButtonVisual()
+    end
+end)
+
+-- ---------------------------
+--  Mini toggle
+-- ---------------------------
+local guiVisible = true
+miniBtn.MouseButton1Click:Connect(function()
+    guiVisible = not guiVisible
+    mainFrame.Visible = guiVisible
+    miniBtn.Text = guiVisible and "GUI" or "SHOW"
+end)
+
+-- ---------------------------
+--  Respawn safety
+-- ---------------------------
+LocalPlayer.CharacterAdded:Connect(function()
+    task.wait(0.2)
+    cancelFlyNow()
+end)
